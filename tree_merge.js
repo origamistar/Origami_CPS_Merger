@@ -7,30 +7,13 @@ class CPStorage {
     saveCP(name, points, lines) {
         const cps = this.getAllCPs();
         
-        // Add black frame to the CP
-        const framePoints = [
-            { x: 0, y: 0 },
-            { x: 512, y: 0 },
-            { x: 512, y: 512 },
-            { x: 0, y: 512 }
-        ];
-        
-        const frameLines = [
-            { p1: framePoints[0], p2: framePoints[1], color: 'black' },
-            { p1: framePoints[1], p2: framePoints[2], color: 'black' },
-            { p1: framePoints[2], p2: framePoints[3], color: 'black' },
-            { p1: framePoints[3], p2: framePoints[0], color: 'black' }
-        ];
-        
-        // Merge existing points/lines with frame
-        const allPoints = [...points, ...framePoints];
-        const allLines = [...lines, ...frameLines];
-        
+        // Store CP without forcing a fixed 512x512 frame
+        // Instead, store the actual points and lines as they are
         const cpData = {
             id: Date.now(),
             name: name,
-            points: allPoints.map(p => ({x: p.x, y: p.y})),
-            lines: allLines.map(l => ({
+            points: points.map(p => ({x: p.x, y: p.y})),
+            lines: lines.map(l => ({
                 p1: {x: l.p1.x, y: l.p1.y},
                 p2: {x: l.p2.x, y: l.p2.y},
                 color: l.color
@@ -80,7 +63,7 @@ class CPStorage {
             svgHeight = height;
         }
 
-        // Scale factor to fit our 512x512 canvas
+        // Scale factor to fit our 512x512 canvas - this is done during import only
         const scaleX = 512 / svgWidth;
         const scaleY = 512 / svgHeight;
 
@@ -574,28 +557,28 @@ class CPMerger {
         
         const mergedPoints = [];
         const mergedLines = [];
-        const pointMap = new Map(); // For deduplication
-        const cpLinesBySource = []; // Store lines by source CP for intersection detection
-        const cpBounds = []; // Store bounds for each CP
+        const pointMap = new Map();
+        const cpLinesBySource = [];
+        const cpBounds = [];
         
-        // Calculate optimal scale and positions if auto-optimization is enabled
         let optimalScale = scale;
         let optimalPositions = [];
+        let optimalScales = [];
         
         if (autoOptimize) {
-            // Use intersection elimination if requested
             if (eliminateIntersections) {
                 const optimization = this.optimizeToEliminateIntersections(cpIds, treeDiagram, enableFlatFoldResize);
                 optimalScale = optimization.scale;
                 optimalPositions = optimization.positions;
+                optimalScales = optimization.scales || [];
             } else {
                 const optimization = this.calculateOptimalLayout(cpIds, treeDiagram);
                 optimalScale = optimization.scale;
                 optimalPositions = optimization.positions;
+                optimalScales = optimization.scales || [];
             }
         }
         
-        // Add base frame to merged result
         this.baseFrame.points.forEach(p => {
             const key = `${p.x},${p.y}`;
             if (!pointMap.has(key)) {
@@ -612,29 +595,26 @@ class CPMerger {
             const cp = this.cpStorage.getCP(cpId);
             if (!cp) return;
             
-            // Calculate bounds for this CP
             const bounds = this.calculateCPBounds(cp);
             cpBounds.push(bounds);
             
+            const cpScale = optimalScales[index] !== undefined ? optimalScales[index] : optimalScale;
+            
             let transformedCP;
             
-            // Use pattern matching if enabled
             if (usePatternMatching) {
                 const bestMatch = this.findBestMatchPosition(cp);
                 if (bestMatch) {
-                    transformedCP = this.applyMatchPosition(cp, bestMatch, enableFlatFoldResize);
+                    transformedCP = this.applyMatchPosition(cp, bestMatch, enableFlatFoldResize, cpScale);
                 } else {
-                    // Fall back to regular positioning if no match found
-                    transformedCP = this.applyRegularPositioning(cp, index, optimalScale, optimalPositions, autoOptimize, scale, enableFlatFoldResize);
+                    transformedCP = this.applyRegularPositioning(cp, index, cpScale, optimalPositions, autoOptimize, scale, enableFlatFoldResize);
                 }
             } else {
-                // Use regular positioning
-                transformedCP = this.applyRegularPositioning(cp, index, optimalScale, optimalPositions, autoOptimize, scale, enableFlatFoldResize);
+                transformedCP = this.applyRegularPositioning(cp, index, cpScale, optimalPositions, autoOptimize, scale, enableFlatFoldResize);
             }
             
             const sourceLines = [];
             
-            // Add transformed points
             transformedCP.points.forEach(p => {
                 const key = `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
                 if (!pointMap.has(key)) {
@@ -643,7 +623,6 @@ class CPMerger {
                 }
             });
             
-            // Add transformed lines
             transformedCP.lines.forEach(l => {
                 const newLine = {
                     p1: l.p1,
@@ -658,17 +637,14 @@ class CPMerger {
             cpLinesBySource.push(sourceLines);
         });
         
-        // Add intersection creases (always enabled now)
         if (cpLinesBySource.length > 1) {
             this.addIntersectionCreases(mergedLines, mergedPoints, pointMap, cpLinesBySource, autoFlatFold);
         }
         
-        // Generate ribbon connections if tree diagram is provided
         if (treeDiagram && autoOptimize) {
             this.generateRibbonConnections(mergedLines, mergedPoints, treeDiagram, cpIds);
         }
         
-        // Optimize for 22.5-degree system if requested
         let finalLines = mergedLines;
         if (optimize22_5) {
             finalLines = this.optimizeFor22_5System(mergedLines, mergedPoints);
@@ -680,9 +656,9 @@ class CPMerger {
         };
     }
 
-    applyRegularPositioning(cp, index, optimalScale, optimalPositions, autoOptimize, scale, enableFlatFold = false) {
+    applyRegularPositioning(cp, index, cpScale, optimalPositions, autoOptimize, scale, enableFlatFold = false) {
         let offsetX, offsetY;
-        const currentScale = autoOptimize ? optimalScale : scale;
+        const currentScale = autoOptimize ? cpScale : scale;
         
         if (autoOptimize && optimalPositions[index]) {
             offsetX = optimalPositions[index].x;
@@ -692,7 +668,13 @@ class CPMerger {
             offsetY = Math.floor(index / 3) * 170;
         }
         
-        // Separate black frame lines from other lines
+        const framePoints = [
+            { x: 0, y: 0 },
+            { x: 512, y: 0 },
+            { x: 512, y: 512 },
+            { x: 0, y: 512 }
+        ];
+        
         const blackFrameLines = cp.lines.filter(l => 
             l.color === 'black' && 
             this.isFrameLine(l, cp.points)
@@ -701,7 +683,6 @@ class CPMerger {
             !blackFrameLines.includes(l)
         );
         
-        // Transform non-frame points with offset and scale
         const nonFramePoints = cp.points.filter(p => 
             !this.isFramePoint(p)
         );
@@ -710,7 +691,6 @@ class CPMerger {
             y: (p.y * currentScale) + offsetY
         }));
         
-        // Transform non-frame lines with offset and scale
         const transformedLines = otherLines.map(l => ({
             p1: {
                 x: (l.p1.x * currentScale) + offsetX,
@@ -723,26 +703,21 @@ class CPMerger {
             color: l.color
         }));
         
-        // Add standard black frame (always at 0,0 to 512,512)
-        const framePoints = [
-            { x: 0, y: 0 },
-            { x: 512, y: 0 },
-            { x: 512, y: 512 },
-            { x: 0, y: 512 }
-        ];
+        const transformedFrameLines = blackFrameLines.map(l => ({
+            p1: {
+                x: (l.p1.x * currentScale) + offsetX,
+                y: (l.p1.y * currentScale) + offsetY
+            },
+            p2: {
+                x: (l.p2.x * currentScale) + offsetX,
+                y: (l.p2.y * currentScale) + offsetY
+            },
+            color: l.color
+        }));
         
-        const frameLines = [
-            { p1: framePoints[0], p2: framePoints[1], color: 'black' },
-            { p1: framePoints[1], p2: framePoints[2], color: 'black' },
-            { p1: framePoints[2], p2: framePoints[3], color: 'black' },
-            { p1: framePoints[3], p2: framePoints[0], color: 'black' }
-        ];
+        let allPoints = [...transformedPoints];
+        let allLines = [...transformedLines, ...transformedFrameLines];
         
-        // Merge frame with transformed content
-        let allPoints = [...transformedPoints, ...framePoints];
-        let allLines = [...transformedLines, ...frameLines];
-        
-        // Add flat-fold lines if enabled
         if (enableFlatFold) {
             const flatFoldLines = this.addFlatFoldLines(allLines, allPoints);
             allLines = [...allLines, ...flatFoldLines];
@@ -755,7 +730,6 @@ class CPMerger {
     }
 
     isFramePoint(p) {
-        // Check if point is a frame corner
         const frameCorners = [
             { x: 0, y: 0 },
             { x: 512, y: 0 },
@@ -771,10 +745,8 @@ class CPMerger {
     }
 
     generateRibbonConnections(mergedLines, mergedPoints, treeDiagram, cpIds) {
-        // Identify ribbon regions (parent-child connections in tree)
         const ribbonRegions = this.identifyRibbonRegions(treeDiagram, cpIds);
         
-        // Generate connecting creases for each ribbon region
         ribbonRegions.forEach(region => {
             this.generateConnectingCreases(mergedLines, mergedPoints, region);
         });
@@ -783,7 +755,6 @@ class CPMerger {
     identifyRibbonRegions(treeDiagram, cpIds) {
         const regions = [];
         
-        // Find parent-child relationships in the tree
         treeDiagram.nodes.forEach(node => {
             if (node.parent && node.cpId && node.parent.cpId) {
                 const parentIndex = cpIds.indexOf(node.parent.cpId);
@@ -806,7 +777,6 @@ class CPMerger {
     }
 
     generateConnectingCreases(mergedLines, mergedPoints, region) {
-        // Find boundary points of parent and child CPs
         const parentBoundary = this.findCPBoundaryPoints(mergedLines, mergedPoints, region.parentCPId);
         const childBoundary = this.findCPBoundaryPoints(mergedLines, mergedPoints, region.childCPId);
         
@@ -814,24 +784,20 @@ class CPMerger {
             return;
         }
         
-        // Find closest points between parent and child
         const closestPair = this.findClosestPoints(parentBoundary, childBoundary);
         
         if (!closestPair) {
             return;
         }
         
-        // Generate connecting creases using 22.5-degree system
         this.generateFoldableConnections(mergedLines, mergedPoints, closestPair, region);
     }
 
     findCPBoundaryPoints(mergedLines, mergedPoints, cpId) {
         const boundaryPoints = [];
         
-        // Find points that belong to this CP and are on the boundary
         mergedLines.forEach(line => {
             if (line.source === cpId && line.color === 'black') {
-                // Add endpoints if they're boundary points
                 if (!this.pointExists(boundaryPoints, line.p1)) {
                     boundaryPoints.push(line.p1);
                 }
@@ -873,17 +839,14 @@ class CPMerger {
     generateFoldableConnections(mergedLines, mergedPoints, closestPair, region) {
         const { p1, p2 } = closestPair;
         
-        // Generate intermediate points using 22.5-degree angles
         const angles = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5];
         const connectionPoints = [p1];
         
-        // Calculate direction vector
         const dx = p2.x - p1.x;
         const dy = p2.y - p1.y;
         const distance = Math.sqrt(dx * dx + dy * dy);
         const baseAngle = Math.atan2(dy, dx) * (180 / Math.PI);
         
-        // Find closest 22.5-degree angle
         let closestAngle = angles[0];
         let minAngleDiff = Math.abs(baseAngle - closestAngle);
         
@@ -895,8 +858,7 @@ class CPMerger {
             }
         });
         
-        // Generate intermediate points along the path
-        const numSegments = Math.ceil(distance / 50); // Segment every 50 pixels
+        const numSegments = Math.ceil(distance / 50);
         const segmentLength = distance / numSegments;
         const angleRad = closestAngle * (Math.PI / 180);
         
@@ -906,8 +868,6 @@ class CPMerger {
                 y: p1.y + (segmentLength * i) * Math.sin(angleRad)
             };
             
-            // Add point if it doesn't exist
-            const key = `${intermediatePoint.x.toFixed(2)},${intermediatePoint.y.toFixed(2)}`;
             const pointExists = mergedPoints.some(p => 
                 Math.abs(p.x - intermediatePoint.x) < 1 && Math.abs(p.y - intermediatePoint.y) < 1
             );
@@ -921,16 +881,14 @@ class CPMerger {
         
         connectionPoints.push(p2);
         
-        // Create connecting lines
         for (let i = 0; i < connectionPoints.length - 1; i++) {
             const line = {
                 p1: connectionPoints[i],
                 p2: connectionPoints[i + 1],
-                color: 'black', // Ribbon connections are typically black (boundary)
+                color: 'black',
                 source: 'ribbon'
             };
             
-            // Check if line already exists
             const lineExists = mergedLines.some(l => 
                 this.linesEqual(l, line)
             );
@@ -950,20 +908,17 @@ class CPMerger {
         );
     }
 
-    // Check if two lines are collinear (on the same infinite line)
     areLinesCollinear(line1, line2, tolerance = 0.001) {
         const dx1 = line1.p2.x - line1.p1.x;
         const dy1 = line1.p2.y - line1.p1.y;
         const dx2 = line2.p2.x - line2.p1.x;
         const dy2 = line2.p2.y - line2.p1.y;
         
-        // Check if cross product is close to zero (lines are parallel)
         const crossProduct = dx1 * dy2 - dy1 * dx2;
         if (Math.abs(crossProduct) > tolerance) {
             return false;
         }
         
-        // Check if line2.p1 is on line1's infinite line
         const dx3 = line2.p1.x - line1.p1.x;
         const dy3 = line2.p1.y - line1.p1.y;
         const crossProduct2 = dx1 * dy3 - dy1 * dx3;
@@ -971,19 +926,15 @@ class CPMerger {
         return Math.abs(crossProduct2) < tolerance;
     }
 
-    // Check if two collinear lines overlap
     doCollinearLinesOverlap(line1, line2) {
-        // Project points onto the line
         const dx = line1.p2.x - line1.p1.x;
         const dy = line1.p2.y - line1.p1.y;
         const lengthSquared = dx * dx + dy * dy;
         
         if (lengthSquared === 0) {
-            // Both lines are points
             return Math.abs(line1.p1.x - line2.p1.x) < 1 && Math.abs(line1.p1.y - line2.p1.y) < 1;
         }
         
-        // Project line2 points onto line1
         const project = (p) => {
             const t = ((p.x - line1.p1.x) * dx + (p.y - line1.p1.y) * dy) / lengthSquared;
             return t;
@@ -994,7 +945,6 @@ class CPMerger {
         const t1a = 0;
         const t1b = 1;
         
-        // Check if intervals overlap
         const min1 = Math.min(t1a, t1b);
         const max1 = Math.max(t1a, t1b);
         const min2 = Math.min(t2a, t2b);
@@ -1003,19 +953,15 @@ class CPMerger {
         return !(max1 < min2 || max2 < min1);
     }
 
-    // Check if two lines intersect (excluding collinear/overlapping cases)
     linesIntersect(line1, line2, tolerance = 0.001) {
-        // Check if lines are collinear
         if (this.areLinesCollinear(line1, line2, tolerance)) {
-            return false; // Collinear lines are not considered intersecting
+            return false;
         }
         
-        // Use existing line intersection logic
         const intersection = this.getLineIntersection(line1.p1, line1.p2, line2.p1, line2.p2);
         return intersection !== null;
     }
 
-    // Check if current layout has any intersections
     hasIntersections(lines) {
         for (let i = 0; i < lines.length; i++) {
             for (let j = i + 1; j < lines.length; j++) {
@@ -1027,38 +973,32 @@ class CPMerger {
         return false;
     }
 
-    // Iterative optimization to eliminate intersections
     optimizeToEliminateIntersections(cpIds, treeDiagram = null, enableFlatFold = false) {
         const maxIterations = 100;
         let iteration = 0;
         let bestLayout = null;
         let bestIntersectionCount = Infinity;
         
-        // Start with current optimal layout
         let currentLayout = this.calculateOptimalLayout(cpIds, treeDiagram);
         
         while (iteration < maxIterations) {
-            // Merge with current layout and flat-fold consideration
             const merged = this.mergeCPs(cpIds, currentLayout.scale, true, false, false, treeDiagram, false, false, false, enableFlatFold);
             
             if (!merged) {
                 break;
             }
             
-            // Count intersections
             const intersectionCount = this.countIntersections(merged.lines);
             
             if (intersectionCount < bestIntersectionCount) {
                 bestIntersectionCount = intersectionCount;
                 bestLayout = { ...currentLayout };
                 
-                // If no intersections, we're done
                 if (intersectionCount === 0) {
                     break;
                 }
             }
             
-            // Try to adjust positions to reduce intersections
             currentLayout = this.adjustPositionsToReduceIntersections(cpIds, currentLayout, merged.lines);
             
             iteration++;
@@ -1080,14 +1020,12 @@ class CPMerger {
     }
 
     adjustPositionsToReduceIntersections(cpIds, currentLayout, lines) {
-        // Adjust both positions and scale to reduce intersections
         const adjustedPositions = currentLayout.positions.map(pos => ({
-            x: pos.x + (Math.random() - 0.5) * 20, // Small random adjustment
+            x: pos.x + (Math.random() - 0.5) * 20,
             y: pos.y + (Math.random() - 0.5) * 20
         }));
         
-        // Adjust scale slightly (between 0.5 and 1.5 of current scale)
-        const scaleAdjustment = 0.9 + Math.random() * 0.2; // 0.9 to 1.1
+        const scaleAdjustment = 0.9 + Math.random() * 0.2;
         const adjustedScale = currentLayout.scale * scaleAdjustment;
         
         return {
@@ -1121,28 +1059,24 @@ class CPMerger {
         const bounds = cps.map(cp => this.calculateCPBounds(cp));
         const blackLineAnalyses = cps.map(cp => this.getBlackLineAnalysis(cp));
         
-        // Check for corner-suitable CPs and validate count
         const cornerSuitableCPs = blackLineAnalyses.filter(analysis => analysis.isCornerSuitable);
         if (cornerSuitableCPs.length > 5) {
             throw new Error('角に配置する展開図が5個を超えています。実行できません。');
         }
         
-        // Calculate total area needed, weighted by black line complexity
         let totalWidth = 0;
         let totalHeight = 0;
         
         bounds.forEach((bound, index) => {
             const complexity = blackLineAnalyses[index].complexity;
-            const complexityFactor = 1 + (complexity / 1000); // Higher complexity = more space needed
+            const complexityFactor = 1 + (complexity / 1000);
             totalWidth += bound.width * complexityFactor;
             totalHeight += bound.height * complexityFactor;
         });
         
-        // Calculate optimal scale to fit in 512x512 canvas
         const maxDimension = Math.max(totalWidth, totalHeight);
-        const optimalScale = Math.min(512 / maxDimension, 1.5); // Cap at 1.5x
+        const optimalScale = Math.min(512 / maxDimension, 1.5);
         
-        // Separate CPs into corner-suitable, edge-suitable, and regular
         const cornerCPs = [];
         const edgeCPs = [];
         const regularCPs = [];
@@ -1157,33 +1091,26 @@ class CPMerger {
             }
         });
         
-        // Consider tree node positions if available
         const nodePositions = treeDiagram ? this.getTreeNodePositions(treeDiagram, cpIds) : null;
-        
-        // Calculate positions
         const positions = [];
         
-        // Position corner CPs at corners (max 4 corners, distribute extras along edges)
         this.positionCornerCPs(cornerCPs, positions, bounds, optimalScale, nodePositions);
-        
-        // Position edge CPs along edges
         this.positionEdgeCPs(edgeCPs, positions, bounds, optimalScale, cornerCPs.length, nodePositions);
-        
-        // Position regular CPs in remaining space using grid layout
         this.positionRegularCPs(regularCPs, positions, bounds, optimalScale, cornerCPs.length + edgeCPs.length, nodePositions);
         
         return {
             scale: optimalScale,
-            positions: positions
+            positions: positions,
+            scales: []
         };
     }
 
     positionCornerCPs(cornerCPs, positions, bounds, scale, nodePositions) {
         const corners = [
-            { x: 0, y: 0 },           // Top-left
-            { x: 512, y: 0 },         // Top-right
-            { x: 512, y: 512 },       // Bottom-right
-            { x: 0, y: 512 }          // Bottom-left
+            { x: 0, y: 0 },
+            { x: 512, y: 0 },
+            { x: 512, y: 512 },
+            { x: 0, y: 512 }
         ];
         
         cornerCPs.forEach((cpIndex, i) => {
@@ -1194,18 +1121,17 @@ class CPMerger {
             const scaledWidth = bound.width * scale;
             const scaledHeight = bound.height * scale;
             
-            // Adjust position based on corner
             let x, y;
-            if (cornerIndex === 0) { // Top-left
+            if (cornerIndex === 0) {
                 x = corner.x + 10;
                 y = corner.y + 10;
-            } else if (cornerIndex === 1) { // Top-right
+            } else if (cornerIndex === 1) {
                 x = corner.x - scaledWidth - 10;
                 y = corner.y + 10;
-            } else if (cornerIndex === 2) { // Bottom-right
+            } else if (cornerIndex === 2) {
                 x = corner.x - scaledWidth - 10;
                 y = corner.y - scaledHeight - 10;
-            } else { // Bottom-left
+            } else {
                 x = corner.x + 10;
                 y = corner.y - scaledHeight - 10;
             }
@@ -1216,10 +1142,10 @@ class CPMerger {
 
     positionEdgeCPs(edgeCPs, positions, bounds, scale, cornerCount, nodePositions) {
         const edges = [
-            { start: { x: 0, y: 0 }, end: { x: 512, y: 0 }, direction: 'horizontal' },     // Top
-            { start: { x: 512, y: 0 }, end: { x: 512, y: 512 }, direction: 'vertical' },   // Right
-            { start: { x: 512, y: 512 }, end: { x: 0, y: 512 }, direction: 'horizontal' }, // Bottom
-            { start: { x: 0, y: 512 }, end: { x: 0, y: 0 }, direction: 'vertical' }         // Left
+            { start: { x: 0, y: 0 }, end: { x: 512, y: 0 }, direction: 'horizontal' },
+            { start: { x: 512, y: 0 }, end: { x: 512, y: 512 }, direction: 'vertical' },
+            { start: { x: 512, y: 512 }, end: { x: 0, y: 512 }, direction: 'horizontal' },
+            { start: { x: 0, y: 512 }, end: { x: 0, y: 0 }, direction: 'vertical' }
         ];
         
         edgeCPs.forEach((cpIndex, i) => {
@@ -1230,9 +1156,8 @@ class CPMerger {
             const scaledWidth = bound.width * scale;
             const scaledHeight = bound.height * scale;
             
-            // Calculate position along edge, avoiding corners
             const edgeLength = 512;
-            const availableSpace = edgeLength - (cornerCount > 0 ? 100 : 0); // Reserve space for corners
+            const availableSpace = edgeLength - (cornerCount > 0 ? 100 : 0);
             const segmentSize = availableSpace / (Math.ceil(edgeCPs.length / 4) + 1);
             const offset = segmentSize * (Math.floor(i / 4) + 1) + (cornerCount > 0 ? 50 : 0);
             
@@ -1252,12 +1177,10 @@ class CPMerger {
     positionRegularCPs(regularCPs, positions, bounds, scale, reservedCount, nodePositions) {
         if (regularCPs.length === 0) return;
         
-        // Calculate available space (center area)
         const margin = 100;
         const availableWidth = 512 - margin * 2;
         const availableHeight = 512 - margin * 2;
         
-        // Grid layout for regular CPs
         const cols = Math.ceil(Math.sqrt(regularCPs.length));
         const rows = Math.ceil(regularCPs.length / cols);
         
@@ -1280,7 +1203,6 @@ class CPMerger {
     }
 
     getTreeNodePositions(treeDiagram, cpIds) {
-        // Get tree node positions for the given CP IDs
         const nodePositions = {};
         treeDiagram.nodes.forEach(node => {
             if (node.cpId && cpIds.includes(node.cpId)) {
@@ -1291,22 +1213,17 @@ class CPMerger {
         return nodePositions;
     }
 
-    // 22.5-degree system utilities
     is22_5DegreeAngle(angle) {
-        // Normalize angle to 0-180 range
         const normalizedAngle = Math.abs(angle) % 180;
-        // Check if angle is close to a multiple of 22.5 degrees
         const targetAngles = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5];
         return targetAngles.some(target => 
-            Math.abs(normalizedAngle - target) < 2 // Allow 2 degree tolerance
+            Math.abs(normalizedAngle - target) < 2
         );
     }
 
     snapTo22_5Degrees(angle) {
-        // Normalize angle to 0-180 range
         let normalizedAngle = Math.abs(angle) % 180;
         
-        // Find closest 22.5-degree multiple
         const targetAngles = [0, 22.5, 45, 67.5, 90, 112.5, 135, 157.5, 180];
         let closestAngle = targetAngles[0];
         let minDiff = Math.abs(normalizedAngle - closestAngle);
@@ -1319,7 +1236,6 @@ class CPMerger {
             }
         });
         
-        // Preserve original sign
         return angle >= 0 ? closestAngle : -closestAngle;
     }
 
@@ -1330,7 +1246,6 @@ class CPMerger {
     }
 
     optimizeFor22_5System(mergedLines, mergedPoints) {
-        // Optimize line angles to align with 22.5-degree system
         const optimizedLines = mergedLines.map(line => {
             const angle = this.getLineAngle(line);
             const length = Math.sqrt(
@@ -1338,11 +1253,9 @@ class CPMerger {
                 Math.pow(line.p2.y - line.p1.y, 2)
             );
             
-            // Snap angle to nearest 22.5-degree multiple
             const snappedAngle = this.snapTo22_5Degrees(angle);
             const snappedAngleRad = snappedAngle * (Math.PI / 180);
             
-            // Calculate new endpoint
             const newP2 = {
                 x: line.p1.x + length * Math.cos(snappedAngleRad),
                 y: line.p1.y + length * Math.sin(snappedAngleRad)
@@ -1359,7 +1272,6 @@ class CPMerger {
         return optimizedLines;
     }
 
-    // Black line pattern matching
     findBlackLineMatches(cp) {
         const blackLines = cp.lines.filter(line => line.color === 'black');
         const frameLines = this.baseFrame.lines;
@@ -1368,33 +1280,27 @@ class CPMerger {
             return [];
         }
         
-        // Test all possible combinations of black lines with frame lines
         const candidateMatches = [];
-        
-        // Test all rotations
         const rotations = [0, 90, 180, 270];
         
         rotations.forEach(rotation => {
-            // For each rotation, try to match each black line with each frame line
             blackLines.forEach(cpLine => {
                 frameLines.forEach(frameLine => {
                     const match = this.tryLineMatch(cpLine, frameLine, rotation);
                     if (match) {
-                        // Calculate how many other black lines also match with this offset/rotation
                         const matchingCount = this.countMatchingLines(blackLines, frameLines, match.offset, rotation);
                         
                         candidateMatches.push({
                             offset: match.offset,
                             rotation: rotation,
                             matchingCount: matchingCount,
-                            score: matchingCount // Score based on number of matching lines
+                            score: matchingCount
                         });
                     }
                 });
             });
         });
         
-        // Remove duplicates (same offset and rotation)
         const uniqueMatches = [];
         const seen = new Set();
         
@@ -1417,7 +1323,6 @@ class CPMerger {
             const rotatedCPLine = this.rotateLine(cpLine, rotation);
             
             frameLines.forEach(frameLine => {
-                // Check if this line matches with the given offset
                 const p1Match = Math.abs(rotatedCPLine.p1.x + offset.x - frameLine.p1.x) < tolerance && 
                                Math.abs(rotatedCPLine.p1.y + offset.y - frameLine.p1.y) < tolerance;
                 const p2Match = Math.abs(rotatedCPLine.p1.x + offset.x - frameLine.p2.x) < tolerance && 
@@ -1437,18 +1342,14 @@ class CPMerger {
     }
 
     tryLineMatch(cpLine, frameLine, rotation) {
-        // Try to match cpLine with frameLine for a specific rotation
-        const tolerance = 5; // Pixel tolerance for matching
-        
+        const tolerance = 5;
         const rotatedCPLine = this.rotateLine(cpLine, rotation);
         
-        // Try matching p1 to p1
         const offset1 = {
             x: frameLine.p1.x - rotatedCPLine.p1.x,
             y: frameLine.p1.y - rotatedCPLine.p1.y
         };
         
-        // Check if at least one endpoint matches (corner matching)
         const p1Match = Math.abs(rotatedCPLine.p1.x + offset1.x - frameLine.p1.x) < tolerance && 
                        Math.abs(rotatedCPLine.p1.y + offset1.y - frameLine.p1.y) < tolerance;
         
@@ -1460,7 +1361,6 @@ class CPMerger {
             };
         }
         
-        // Try matching p1 to p2
         const offset2 = {
             x: frameLine.p2.x - rotatedCPLine.p1.x,
             y: frameLine.p2.y - rotatedCPLine.p1.y
@@ -1477,7 +1377,6 @@ class CPMerger {
             };
         }
         
-        // Try matching p2 to p1
         const offset3 = {
             x: frameLine.p1.x - rotatedCPLine.p2.x,
             y: frameLine.p1.y - rotatedCPLine.p2.y
@@ -1494,7 +1393,6 @@ class CPMerger {
             };
         }
         
-        // Try matching p2 to p2
         const offset4 = {
             x: frameLine.p2.x - rotatedCPLine.p2.x,
             y: frameLine.p2.y - rotatedCPLine.p2.y
@@ -1519,7 +1417,6 @@ class CPMerger {
         const cos = Math.cos(radians);
         const sin = Math.sin(radians);
         
-        // Rotate around origin (0,0)
         const rotatePoint = (p) => ({
             x: p.x * cos - p.y * sin,
             y: p.x * sin + p.y * cos
@@ -1539,7 +1436,6 @@ class CPMerger {
             return null;
         }
         
-        // Find the best match (highest matchingCount = most black lines matching frame)
         let bestMatch = matches[0];
         matches.forEach(match => {
             if (match.matchingCount > bestMatch.matchingCount) {
@@ -1550,33 +1446,29 @@ class CPMerger {
         return bestMatch;
     }
 
-    applyMatchPosition(cp, match, enableFlatFold = false) {
+    applyMatchPosition(cp, match, enableFlatFold = false, cpScale = 1) {
         const radians = match.rotation * (Math.PI / 180);
         const cos = Math.cos(radians);
         const sin = Math.sin(radians);
         
-        // Transform all points and lines (including black frame)
         const transformedPoints = cp.points.map(p => {
-            // Rotate
-            const rotatedX = p.x * cos - p.y * sin;
-            const rotatedY = p.x * sin + p.y * cos;
+            const rotatedX = (p.x * cos - p.y * sin) * cpScale;
+            const rotatedY = (p.x * sin + p.y * cos) * cpScale;
             
-            // Translate
             return {
                 x: rotatedX + match.offset.x,
                 y: rotatedY + match.offset.y
             };
         });
         
-        // Transform all lines
         const transformedLines = cp.lines.map(l => {
             const rotatedP1 = {
-                x: l.p1.x * cos - l.p1.y * sin,
-                y: l.p1.x * sin + l.p1.y * cos
+                x: (l.p1.x * cos - l.p1.y * sin) * cpScale,
+                y: (l.p1.x * sin + l.p1.y * cos) * cpScale
             };
             const rotatedP2 = {
-                x: l.p2.x * cos - l.p2.y * sin,
-                y: l.p2.x * sin + l.p2.y * cos
+                x: (l.p2.x * cos - l.p2.y * sin) * cpScale,
+                y: (l.p2.x * sin + l.p2.y * cos) * cpScale
             };
             
             return {
@@ -1595,7 +1487,6 @@ class CPMerger {
         let allPoints = [...transformedPoints];
         let allLines = [...transformedLines];
         
-        // Add flat-fold lines if enabled
         if (enableFlatFold) {
             const flatFoldLines = this.addFlatFoldLines(allLines, allPoints);
             allLines = [...allLines, ...flatFoldLines];
@@ -1611,30 +1502,25 @@ class CPMerger {
         const newLines = [];
         const pointMap = new Map();
         
-        // Build point map for deduplication
         points.forEach(p => {
             const key = `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
             pointMap.set(key, p);
         });
         
-        // Add intersection creases between same-colored lines
         for (let i = 0; i < lines.length; i++) {
             for (let j = i + 1; j < lines.length; j++) {
                 const line1 = lines[i];
                 const line2 = lines[j];
                 
-                // Only add intersections for same-colored lines
                 if (line1.color === line2.color) {
                     const intersection = this.getLineIntersection(line1.p1, line1.p2, line2.p1, line2.p2);
                     if (intersection) {
-                        // Check if intersection point already exists
                         const key = `${intersection.x.toFixed(2)},${intersection.y.toFixed(2)}`;
                         if (!pointMap.has(key)) {
                             pointMap.set(key, intersection);
                             points.push(intersection);
                         }
                         
-                        // Add crease lines from intersection to line endpoints
                         newLines.push({
                             p1: line1.p1,
                             p2: intersection,
@@ -1664,7 +1550,6 @@ class CPMerger {
     }
 
     isFrameLine(line, points) {
-        // Check if line is part of the 512x512 frame
         const frameCorners = [
             { x: 0, y: 0 },
             { x: 512, y: 0 },
@@ -1674,7 +1559,6 @@ class CPMerger {
         
         const tolerance = 5;
         
-        // Check if both endpoints are frame corners
         const p1IsCorner = frameCorners.some(c => 
             Math.abs(line.p1.x - c.x) < tolerance && Math.abs(line.p1.y - c.y) < tolerance
         );
@@ -1697,11 +1581,10 @@ class CPMerger {
             if (groups[dominantColor]) {
                 groups[dominantColor].push(index);
             } else {
-                groups['black'].push(index); // Default to black
+                groups['black'].push(index);
             }
         });
         
-        // Return only non-empty groups
         return Object.values(groups).filter(group => group.length > 0);
     }
 
@@ -1720,7 +1603,6 @@ class CPMerger {
             }
         });
         
-        // Find the color with the most lines
         let maxCount = 0;
         let dominantColor = 'black';
         
@@ -1762,7 +1644,6 @@ class CPMerger {
             };
         }
         
-        // Calculate total and average length of black lines
         let totalLength = 0;
         blackLines.forEach(line => {
             const length = Math.sqrt(
@@ -1773,21 +1654,13 @@ class CPMerger {
         });
         
         const avgLength = totalLength / count;
-        
-        // Calculate complexity based on line count and average length
-        // More black lines and shorter average length = higher complexity
         const complexity = (count * 100) / (avgLength + 1);
         
-        // Determine if this is a black-line CP suitable for edge/corner placement
-        // Black-line CP: predominantly black lines (>70% black)
         const totalLines = cp.lines.length;
         const blackRatio = count / totalLines;
         const isBlackLineCP = blackRatio > 0.7;
         
-        // Check if suitable for corner placement (compact, high black line density)
         const isCornerSuitable = isBlackLineCP && count >= 3 && avgLength < 100;
-        
-        // Check if suitable for edge placement (linear, moderate black line density)
         const isEdgeSuitable = isBlackLineCP && count >= 2 && avgLength >= 50 && avgLength < 200;
         
         return {
@@ -1802,7 +1675,6 @@ class CPMerger {
     }
 
     addIntersectionCreases(mergedLines, mergedPoints, pointMap, cpLinesBySource, autoFlatFold) {
-        // Find intersections between lines from different sources, but only same-color lines
         for (let i = 0; i < cpLinesBySource.length; i++) {
             for (let j = i + 1; j < cpLinesBySource.length; j++) {
                 const lines1 = cpLinesBySource[i];
@@ -1810,7 +1682,6 @@ class CPMerger {
                 
                 lines1.forEach(line1 => {
                     lines2.forEach(line2 => {
-                        // Only process intersections between same-colored lines
                         if (line1.color !== line2.color) {
                             return;
                         }
@@ -1821,14 +1692,12 @@ class CPMerger {
                         );
                         
                         if (intersection) {
-                            // Add intersection point
                             const key = `${intersection.x.toFixed(2)},${intersection.y.toFixed(2)}`;
                             if (!pointMap.has(key)) {
                                 pointMap.set(key, intersection);
                                 mergedPoints.push(intersection);
                             }
                             
-                            // Add crease lines from intersection to nearby points
                             this.addCreaseFromIntersection(mergedLines, mergedPoints, pointMap, intersection, line1, line2, autoFlatFold);
                         }
                     });
@@ -1841,7 +1710,7 @@ class CPMerger {
         const denom = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
         
         if (Math.abs(denom) < 0.0001) {
-            return null; // Lines are parallel
+            return null;
         }
         
         const ua = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / denom;
@@ -1858,14 +1727,12 @@ class CPMerger {
     }
 
     addCreaseFromIntersection(mergedLines, mergedPoints, pointMap, intersection, line1, line2, autoFlatFold) {
-        // Find nearby points to connect with
         const nearbyPoints = mergedPoints.filter(p => {
             const dist = Math.sqrt((p.x - intersection.x) ** 2 + (p.y - intersection.y) ** 2);
-            return dist > 1 && dist < 100; // Not too closes not too far
-        }).slice(0, 4); // Limit to 4 nearest points
+            return dist > 1 && dist < 100;
+        }).slice(0, 4);
         
         nearbyPoints.forEach(point => {
-            // Check if line already exists
             const lineExists = mergedLines.some(l => {
                 const sameLine = 
                     (Math.abs(l.p1.x - intersection.x) < 0.1 && Math.abs(l.p1.y - intersection.y) < 0.1 &&
@@ -1876,10 +1743,8 @@ class CPMerger {
             });
             
             if (!lineExists) {
-                // Determine color based on auto flat fold setting
                 let color = 'black';
                 if (autoFlatFold) {
-                    // Simple heuristic: alternate mountain/valley
                     color = Math.random() > 0.5 ? 'red' : 'blue';
                 }
                 
@@ -1901,7 +1766,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const treeDiagram = new TreeDiagram(treeCanvas);
     const cpMerger = new CPMerger();
     
-    // Update saved CPs list
     let selectedCPId = null;
     
     function updateSavedCPsList() {
@@ -1926,7 +1790,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    // Save current CP
     document.getElementById('save_cp').addEventListener('click', () => {
         const name = document.getElementById('cp_name').value;
         if (name && points && lines) {
@@ -1939,7 +1802,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     
-    // Import file (SVG or FOLD)
     document.getElementById('import_file').addEventListener('click', () => {
         const fileInput = document.getElementById('file_import');
         const file = fileInput.files[0];
@@ -1978,7 +1840,6 @@ document.addEventListener('DOMContentLoaded', () => {
         reader.readAsText(file);
     });
     
-    // Delete selected CP
     document.getElementById('delete_selected_cp').addEventListener('click', () => {
         if (!selectedCPId) {
             alert('削除する展開図を選択してください');
@@ -1993,22 +1854,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     
-    // Load CP to editor (redirect to index.html)
     document.getElementById('load_to_editor').addEventListener('click', () => {
         window.location.href = 'index.html';
     });
     
-    // Add node to tree
     document.getElementById('add_node').addEventListener('click', () => {
         treeDiagram.addNode();
     });
     
-    // Remove node from tree
     document.getElementById('remove_node').addEventListener('click', () => {
         treeDiagram.removeNode();
     });
     
-    // Merge all CPs in tree
     document.getElementById('merge_all').addEventListener('click', () => {
         const cpIds = treeDiagram.getAllCPIds();
         if (cpIds.length === 0) {
@@ -2034,7 +1891,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     
-    // Export merged CP
     document.getElementById('export_merged').addEventListener('click', () => {
         const cpIds = treeDiagram.getAllCPIds();
         if (cpIds.length === 0) {
@@ -2080,7 +1936,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
     
-    // Convert merged CP to SVG format
     function convertToSVG(merged) {
         const width = 512;
         const height = 512;
@@ -2094,11 +1949,10 @@ document.addEventListener('DOMContentLoaded', () => {
  viewBox="0 0 ${width} ${height}" >
 `;
         
-        // Add lines as path elements
         merged.lines.forEach(line => {
             const strokeWidth = line.color === 'black' ? 4 : 2;
             svgContent += ` <path style="fill:none;stroke:${line.color};stroke-width:${strokeWidth}.000000px;stroke-linecap:round;stroke-linejoin:round;stroke-opacity:1;fill-opacity:1.000000"
-  d="M ${line.p1.x},${line.p1.y} L ${line.p2.x},${line.p2.y}" />
+   d="M ${line.p1.x},${line.p1.y} L ${line.p2.x},${line.p2.y}" />
 `;
         });
         
@@ -2106,12 +1960,10 @@ document.addEventListener('DOMContentLoaded', () => {
         return svgContent;
     }
     
-    // Draw merged CP on canvas
     function drawMergedCP(merged) {
         const ctx = mergedCanvas.getContext('2d');
         ctx.clearRect(0, 0, mergedCanvas.width, mergedCanvas.height);
         
-        // Draw lines
         merged.lines.forEach(line => {
             ctx.beginPath();
             ctx.lineWidth = 1;
@@ -2121,7 +1973,6 @@ document.addEventListener('DOMContentLoaded', () => {
             ctx.stroke();
         });
         
-        // Draw points
         merged.points.forEach(point => {
             ctx.beginPath();
             ctx.arc(point.x, point.y, 2, 0, Math.PI * 2);
@@ -2130,12 +1981,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
     
-    // Scale slider value display
     document.getElementById('merge_scale').addEventListener('input', (e) => {
         document.getElementById('scale_value').textContent = parseFloat(e.target.value).toFixed(1);
     });
     
-    // Initialize
     updateSavedCPsList();
     treeDiagram.draw();
 });
