@@ -25,7 +25,7 @@ class CPStorage {
         
         // Store CP without forcing a fixed 512x512 frame
         const cpData = {
-            id: Date.now(),
+            id: this.generateUniqueId(cps),
             name: name,
             points: points.map(p => ({x: this.roundToFixed(p.x), y: this.roundToFixed(p.y)})),
             lines: lines.map(l => ({
@@ -42,6 +42,11 @@ class CPStorage {
 
     roundToFixed(value, decimals = 4) {
         return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
+    }
+
+    generateUniqueId(cps) {
+        const maxId = cps.reduce((max, cp) => Math.max(max, cp.id), 0);
+        return Math.max(Date.now(), maxId + 1);
     }
 
     getAllCPs() {
@@ -659,9 +664,20 @@ class CPMerger {
         // Sort for deterministic output
         this.sortLinesAndPoints(finalLines, mergedPoints);
         
+        // Strip internal source tags (CP ids are timestamps and vary between sessions)
+        const outputLines = finalLines.map(l => ({
+            p1: {x: this.roundToFixed(l.p1.x), y: this.roundToFixed(l.p1.y)},
+            p2: {x: this.roundToFixed(l.p2.x), y: this.roundToFixed(l.p2.y)},
+            color: l.color
+        }));
+        const outputPoints = mergedPoints.map(p => ({
+            x: this.roundToFixed(p.x),
+            y: this.roundToFixed(p.y)
+        }));
+        
         return {
-            points: mergedPoints,
-            lines: finalLines
+            points: outputPoints,
+            lines: outputLines
         };
     }
 
