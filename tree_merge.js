@@ -7,8 +7,6 @@ class CPStorage {
     saveCP(name, points, lines) {
         const cps = this.getAllCPs();
         
-        // Store CP without forcing a fixed 512x512 frame
-        // Instead, store the actual points and lines as they are
         const cpData = {
             id: Date.now(),
             name: name,
@@ -54,7 +52,6 @@ class CPStorage {
         const lines = [];
         const pointMap = new Map();
 
-        // Get SVG viewBox to handle coordinates
         const viewBox = svgElement.getAttribute('viewBox');
         let svgWidth = 512, svgHeight = 512;
         if (viewBox) {
@@ -63,11 +60,9 @@ class CPStorage {
             svgHeight = height;
         }
 
-        // Scale factor to fit our 512x512 canvas - this is done during import only
         const scaleX = 512 / svgWidth;
         const scaleY = 512 / svgHeight;
 
-        // Process all line elements
         const lineElements = svgElement.querySelectorAll('line');
         lineElements.forEach(line => {
             const x1 = parseFloat(line.getAttribute('x1')) * scaleX;
@@ -88,13 +83,11 @@ class CPStorage {
             });
         });
 
-        // Process all path elements
         const pathElements = svgElement.querySelectorAll('path');
         pathElements.forEach(path => {
             const d = path.getAttribute('d');
             let stroke = path.getAttribute('stroke');
             
-            // Handle style attribute
             if (!stroke) {
                 const style = path.getAttribute('style');
                 if (style) {
@@ -123,7 +116,6 @@ class CPStorage {
             }
         });
 
-        // Process all polyline elements
         const polylineElements = svgElement.querySelectorAll('polyline');
         polylineElements.forEach(polyline => {
             const pointsAttr = polyline.getAttribute('points');
@@ -158,7 +150,6 @@ class CPStorage {
     }
 
     svgColorToInternalColor(svgColor) {
-        // Map common SVG colors to internal colors
         const colorMap = {
             'black': 'black',
             '#000000': 'black',
@@ -256,7 +247,6 @@ class CPStorage {
         const lines = [];
         const pointMap = new Map();
 
-        // Get the coordinate bounds for scaling
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         fold.vertices_coords.forEach(coord => {
             minX = Math.min(minX, coord[0]);
@@ -270,14 +260,12 @@ class CPStorage {
         const scaleX = 512 / foldWidth;
         const scaleY = 512 / foldHeight;
 
-        // Add vertices as points
         fold.vertices_coords.forEach((coord, index) => {
             const x = (coord[0] - minX) * scaleX;
             const y = (coord[1] - minY) * scaleY;
             this.addPointIfNotExists(points, pointMap, x, y);
         });
 
-        // Add edges as lines
         fold.edges_vertices.forEach((edgeVertices, index) => {
             const v1Index = edgeVertices[0];
             const v2Index = edgeVertices[1];
@@ -294,20 +282,19 @@ class CPStorage {
             const x2 = (coord2[0] - minX) * scaleX;
             const y2 = (coord2[1] - minY) * scaleY;
 
-            // Get edge assignment for color
             let color = 'black';
             if (fold.edges_assignment && fold.edges_assignment[index]) {
                 const assignment = fold.edges_assignment[index];
                 switch (assignment) {
-                    case 'M': // Mountain
+                    case 'M':
                         color = 'red';
                         break;
-                    case 'V': // Valley
+                    case 'V':
                         color = 'blue';
                         break;
-                    case 'B': // Border
-                    case 'F': // Flat
-                    case 'U': // Unassigned
+                    case 'B':
+                    case 'F':
+                    case 'U':
                     default:
                         color = 'black';
                         break;
@@ -393,7 +380,6 @@ class TreeDiagram {
             this.draggedNode.x = x - this.dragOffset.x;
             this.draggedNode.y = y - this.dragOffset.y;
             
-            // Constrain to canvas bounds
             this.draggedNode.x = Math.max(15, Math.min(this.canvas.width - 15, this.draggedNode.x));
             this.draggedNode.y = Math.max(15, Math.min(this.canvas.height - 15, this.draggedNode.y));
             
@@ -418,12 +404,10 @@ class TreeDiagram {
 
     addNode(cpId = null) {
         if (this.nodes.length === 0) {
-            // Create root node
             const node = new TreeNode(300, 50, cpId);
             this.nodes.push(node);
             this.root = node;
         } else if (this.selectedNode) {
-            // Add child to selected node
             const childCount = this.selectedNode.children.length;
             const x = this.selectedNode.x + (childCount - 0.5) * 100;
             const y = this.selectedNode.y + 100;
@@ -436,7 +420,6 @@ class TreeDiagram {
 
     removeNode() {
         if (this.selectedNode && this.selectedNode !== this.root) {
-            // Remove node and its children
             const toRemove = [this.selectedNode];
             let i = 0;
             while (i < toRemove.length) {
@@ -445,14 +428,12 @@ class TreeDiagram {
                 i++;
             }
             
-            // Remove from parent's children
             if (this.selectedNode.parent) {
                 this.selectedNode.parent.children = this.selectedNode.parent.children.filter(
                     child => child !== this.selectedNode
                 );
             }
             
-            // Remove from nodes array
             this.nodes = this.nodes.filter(node => !toRemove.includes(node));
             this.selectedNode = null;
             this.draw();
@@ -469,7 +450,6 @@ class TreeDiagram {
     draw() {
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
         
-        // Draw connections
         this.ctx.strokeStyle = '#333';
         this.ctx.lineWidth = 2;
         this.nodes.forEach(node => {
@@ -481,7 +461,6 @@ class TreeDiagram {
             }
         });
         
-        // Draw nodes
         this.nodes.forEach(node => {
             this.ctx.beginPath();
             this.ctx.arc(node.x, node.y, 15, 0, Math.PI * 2);
@@ -498,7 +477,6 @@ class TreeDiagram {
             this.ctx.lineWidth = 2;
             this.ctx.stroke();
             
-            // Draw CP name if assigned
             if (node.cpId) {
                 const cp = this.cpStorage.getCP(node.cpId);
                 if (cp) {
@@ -534,7 +512,6 @@ class CPMerger {
     }
 
     createBaseFrame() {
-        // Create a 512x512 black frame template
         const points = [
             { x: 0, y: 0 },
             { x: 512, y: 0 },
@@ -543,13 +520,19 @@ class CPMerger {
         ];
 
         const lines = [
-            { p1: points[0], p2: points[1], color: 'black' },   // Top edge
-            { p1: points[1], p2: points[2], color: 'black' },   // Right edge
-            { p1: points[2], p2: points[3], color: 'black' },   // Bottom edge
-            { p1: points[3], p2: points[0], color: 'black' }    // Left edge
+            { p1: points[0], p2: points[1], color: 'black' },
+            { p1: points[1], p2: points[2], color: 'black' },
+            { p1: points[2], p2: points[3], color: 'black' },
+            { p1: points[3], p2: points[0], color: 'black' }
         ];
 
         return { points, lines };
+    }
+
+    // 決定的なハッシュベースの乱数生成器（同じシードでは常に同じ値を返す）
+    seededRandom(seed) {
+        const x = Math.sin(seed) * 10000;
+        return x - Math.floor(x);
     }
 
     mergeCPs(cpIds, scale = 1, addIntersections = true, autoFlatFold = false, autoOptimize = false, treeDiagram = null, optimize22_5 = false, usePatternMatching = false, eliminateIntersections = false, enableFlatFoldResize = false) {
@@ -973,15 +956,15 @@ class CPMerger {
         return false;
     }
 
+    // 決定的な最適化：反復回数を固定し、シード値を使用して決定的な調整を行う
     optimizeToEliminateIntersections(cpIds, treeDiagram = null, enableFlatFold = false) {
-        const maxIterations = 100;
-        let iteration = 0;
+        const maxIterations = 50; // 固定の反復回数
         let bestLayout = null;
         let bestIntersectionCount = Infinity;
         
         let currentLayout = this.calculateOptimalLayout(cpIds, treeDiagram);
         
-        while (iteration < maxIterations) {
+        for (let iteration = 0; iteration < maxIterations; iteration++) {
             const merged = this.mergeCPs(cpIds, currentLayout.scale, true, false, false, treeDiagram, false, false, false, enableFlatFold);
             
             if (!merged) {
@@ -992,19 +975,54 @@ class CPMerger {
             
             if (intersectionCount < bestIntersectionCount) {
                 bestIntersectionCount = intersectionCount;
-                bestLayout = { ...currentLayout };
+                bestLayout = {
+                    scale: currentLayout.scale,
+                    positions: currentLayout.positions.map(p => ({...p}))
+                };
                 
                 if (intersectionCount === 0) {
                     break;
                 }
             }
             
-            currentLayout = this.adjustPositionsToReduceIntersections(cpIds, currentLayout, merged.lines);
-            
-            iteration++;
+            // 決定的な調整：シード値を使用
+            currentLayout = this.adjustPositionsDeterministic(cpIds, currentLayout, iteration);
         }
         
         return bestLayout || currentLayout;
+    }
+
+    // 決定的な位置調整（ランダムではなく、イテレーション番号を使用）
+    adjustPositionsDeterministic(cpIds, currentLayout, iterationIndex) {
+        // 各CPに対して異なる調整を施す（決定的）
+        const adjustedPositions = currentLayout.positions.map((pos, cpIndex) => {
+            // シード値：CP索引 + イテレーション番号の組み合わせ
+            const seed1 = cpIndex * 1000 + iterationIndex * 17;
+            const seed2 = cpIndex * 2000 + iterationIndex * 31;
+            
+            const random1 = this.seededRandom(seed1);
+            const random2 = this.seededRandom(seed2);
+            
+            // 小さな固定値による調整（ランダムではなく決定的）
+            const adjustmentX = (random1 - 0.5) * 10; // ±5ピクセル
+            const adjustmentY = (random2 - 0.5) * 10; // ±5ピクセル
+            
+            return {
+                x: pos.x + adjustmentX,
+                y: pos.y + adjustmentY
+            };
+        });
+        
+        // スケールも決定的に調整
+        const scaleSeed = iterationIndex * 42;
+        const scaleRandom = this.seededRandom(scaleSeed);
+        const scaleAdjustment = 0.95 + scaleRandom * 0.1; // 0.95～1.05の範囲
+        const adjustedScale = currentLayout.scale * scaleAdjustment;
+        
+        return {
+            scale: Math.max(0.3, Math.min(1.5, adjustedScale)),
+            positions: adjustedPositions
+        };
     }
 
     countIntersections(lines) {
@@ -1017,21 +1035,6 @@ class CPMerger {
             }
         }
         return count;
-    }
-
-    adjustPositionsToReduceIntersections(cpIds, currentLayout, lines) {
-        const adjustedPositions = currentLayout.positions.map(pos => ({
-            x: pos.x + (Math.random() - 0.5) * 20,
-            y: pos.y + (Math.random() - 0.5) * 20
-        }));
-        
-        const scaleAdjustment = 0.9 + Math.random() * 0.2;
-        const adjustedScale = currentLayout.scale * scaleAdjustment;
-        
-        return {
-            scale: adjustedScale,
-            positions: adjustedPositions
-        };
     }
 
     calculateCPBounds(cp) {
@@ -1743,9 +1746,12 @@ class CPMerger {
             });
             
             if (!lineExists) {
+                // autoFlatFoldの場合も決定的な色選択を行う
                 let color = 'black';
                 if (autoFlatFold) {
-                    color = Math.random() > 0.5 ? 'red' : 'blue';
+                    // ハッシュベースで決定的に色を決定
+                    const seed = Math.round(intersection.x * 1000) + Math.round(intersection.y * 1000);
+                    color = this.seededRandom(seed) > 0.5 ? 'red' : 'blue';
                 }
                 
                 mergedLines.push({
