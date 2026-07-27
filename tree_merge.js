@@ -1016,37 +1016,148 @@ class CPMerger {
     }
 
     optimizeToEliminateIntersections(cpIds, treeDiagram = null, enableFlatFold = false) {
-        const maxIterations = 100;
-        let iteration = 0;
-        let bestLayout = null;
-        let bestIntersectionCount = Infinity;
+        const initialLayout = this.calculateOptimalLayout(cpIds, treeDiagram);
+        const cps = cpIds.map(cpId => this.cpStorage.getCP(cpId)).filter(cp => cp);
         
-        let currentLayout = this.calculateOptimalLayout(cpIds, treeDiagram);
+        if (cps.length < 2) {
+            return initialLayout;
+        }
         
-        while (iteration < maxIterations) {
-            const merged = this.mergeCPs(cpIds, currentLayout.scale, true, false, false, treeDiagram, false, false, false, enableFlatFold);
+        const bounds = cps.map(cp => this.calculateCPBounds(cp));
+        let scale = initialLayout.scale;
+        let positions = initialLayout.positions.map(pos => ({ x: pos.x, y: pos.y }));
+        
+        const maxIterations = 300;
+        const stepSize = 8;
+        const minScale = 0.05;
+        
+        const transformLines = (cpIndex) => cps[cpIndex].lines.map(l => ({
+            p1: { x: l.p1.x * scale + positions[cpIndex].x, y: l.p1.y * scale + positions[cpIndex].y },
+            p2: { x: l.p2.x * scale + positions[cpIndex].x, y: l.p2.y * scale + positions[cpIndex].y }
+        }));
+        
+        const clampPosition = (cpIndex) => {
+            const bound = bounds[cpIndex];
+            positions[cpIndex].x = Math.min(512 - bound.maxX * scale, Math.max(-bound.minX * scale, positions[cpIndex].x));
+            positions[cpIndex].y = Math.min(512 - bound.maxY * scale, Math.max(-bound.minY * scale, positions[cpIndex].y));
+        };
+        
+        cps.forEach((_, i) => clampPosition(i));
+        
+        let bestPositions = positions.map(pos => ({ ...pos }));
+        let bestScale = scale;
+        let bestCount = Infinity;
+        let stagnation = 0;
+        
+        for (let iteration = 0; iteration < maxIterations; iteration++) {
+            const lineSets = cps.map((_, i) => transformLines(i));
+            const crossingPairs = this.findCrossingCPPairs(lineSets);
+            const totalCrossings = crossingPairs.reduce((sum, pair) => sum + pair.count, 0);
             
-            if (!merged) {
+            if (totalCrossings < bestCount) {
+                bestCount = totalCrossings;
+                bestPositions = positions.map(pos => ({ ...pos }));
+                bestScale = scale;
+                stagnation = 0;
+            } else {
+                stagnation++;
+            }
+            
+            if (totalCrossings === 0) {
                 break;
             }
             
-            const intersectionCount = this.countIntersections(merged.lines);
-            
-            if (intersectionCount < bestIntersectionCount) {
-                bestIntersectionCount = intersectionCount;
-                bestLayout = { ...currentLayout };
-                
-                if (intersectionCount === 0) {
+            if (stagnation >= 20) {
+                if (scale * 0.9 < minScale) {
                     break;
                 }
+                scale *= 0.9;
+                cps.forEach((_, i) => clampPosition(i));
+                stagnation = 0;
+                continue;
             }
             
-            currentLayout = this.adjustPositionsToReduceIntersections(cpIds, currentLayout, merged.lines);
+            const displacements = cps.map(() => ({ x: 0, y: 0 }));
             
-            iteration++;
+            crossingPairs.forEach(pair => {
+                const centerI = this.getTransformedCenter(bounds[pair.i], scale, positions[pair.i]);
+                const centerJ = this.getTransformedCenter(bounds[pair.j], scale, positions[pair.j]);
+                
+                let dx = centerJ.x - centerI.x;
+                let dy = centerJ.y - centerI.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                
+                if (dist < 0.001) {
+                    dx = 1;
+                    dy = 0;
+                } else {
+                    dx /= dist;
+                    dy /= dist;
+                }
+                
+                displacements[pair.i].x -= dx * stepSize;
+                displacements[pair.i].y -= dy * stepSize;
+                displacements[pair.j].x += dx * stepSize;
+                displacements[pair.j].y += dy * stepSize;
+            });
+            
+            cps.forEach((_, i) => {
+                positions[i].x += displacements[i].x;
+                positions[i].y += displacements[i].y;
+                clampPosition(i);
+            });
         }
         
-        return bestLayout || currentLayout;
+        return {
+            scale: bestScale,
+            positions: bestPositions,
+            scales: []
+        };
+    }
+
+    getTransformedCenter(bound, scale, position) {
+        return {
+            x: ((bound.minX + bound.maxX) / 2) * scale + position.x,
+            y: ((bound.minY + bound.maxY) / 2) * scale + position.y
+        };
+    }
+
+    findCrossingCPPairs(lineSets) {
+        const pairs = [];
+        
+        for (let i = 0; i < lineSets.length; i++) {
+            for (let j = i + 1; j < lineSets.length; j++) {
+                let count = 0;
+                lineSets[i].forEach(line1 => {
+                    lineSets[j].forEach(line2 => {
+                        if (this.segmentsCross(line1, line2)) {
+                            count++;
+                        }
+                    });
+                });
+                
+                if (count > 0) {
+                    pairs.push({ i, j, count });
+                }
+            }
+        }
+        
+        return pairs;
+    }
+
+    segmentsCross(line1, line2) {
+        const p1 = line1.p1, p2 = line1.p2, p3 = line2.p1, p4 = line2.p2;
+        const denom = (p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y);
+        
+        if (Math.abs(denom) < 0.0001) {
+            return false;
+        }
+        
+        const ua = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / denom;
+        const ub = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / denom;
+        
+        const eps = 0.001;
+        return ua > eps && ua < 1 - eps && ub > eps && ub < 1 - eps;
     }
 
     countIntersections(lines) {
@@ -1059,22 +1170,6 @@ class CPMerger {
             }
         }
         return count;
-    }
-
-    adjustPositionsToReduceIntersections(cpIds, currentLayout, lines) {
-        // Use seeded RNG for deterministic adjustments
-        const adjustedPositions = currentLayout.positions.map(pos => ({
-            x: pos.x + (this.rng.next() - 0.5) * 20,
-            y: pos.y + (this.rng.next() - 0.5) * 20
-        }));
-        
-        const scaleAdjustment = 0.9 + this.rng.next() * 0.2;
-        const adjustedScale = currentLayout.scale * scaleAdjustment;
-        
-        return {
-            scale: adjustedScale,
-            positions: adjustedPositions
-        };
     }
 
     calculateCPBounds(cp) {
