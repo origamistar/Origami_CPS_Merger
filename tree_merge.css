@@ -1,0 +1,101 @@
+.container {
+    display: flex;
+    justify-content: space-between;
+    padding: 20px;
+    gap: 20px;
+}
+
+.left-panel, .center-panel, .right-panel {
+    background: white;
+    padding: 20px;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.left-panel {
+    width: 250px;
+}
+
+.center-panel {
+    width: 650px;
+}
+
+.right-panel {
+    width: 550px;
+}
+
+h2 {
+    font-size: 20px;
+    margin-bottom: 15px;
+    color: #333;
+}
+
+input[type="text"] {
+    width: 100%;
+    padding: 8px;
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+button {
+    padding: 10px 15px;
+    margin: 5px 0;
+    background: #00a6ff;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+}
+
+button:hover {
+    background: #0088cc;
+}
+
+button:active {
+    background: #006699;
+}
+
+#saved_cps_list {
+    max-height: 400px;
+    overflow-y: auto;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    padding: 10px;
+}
+
+.cp-item {
+    padding: 10px;
+    margin: 5px 0;
+    background: #f5f5f5;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.cp-item:hover {
+    background: #e0e0e0;
+}
+
+.cp-item.selected {
+    background: #00a6ff;
+    color: white;
+}
+
+.tree-controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+#tree_canvas, #merged_canvas {
+    border: 2px solid #333;
+    background: white;
+    display: block;
+    margin: 0 auto;
+}
+
+canvas {
+    display: block;
+    margin: 0 auto;
+}

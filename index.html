@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>折り紙作品集</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body translate="no">
+    <h1>
+        ＜ここは私の折り紙の置き場所です＞
+    </h1>
+    <p>
+        0 = CutLine/ 1 = MountainLine/ 2 = VallayLine/
+    </p>
+    <a href="tree_merge.html" style="display: block; margin: 10px auto; text-align: center; color: #00a6ff; text-decoration: none;">展開図統合ツールへ</a>
+    <input type="range" min="0" max="2" value="0" id="linetype">
+    <div class="input_cp">
+        <canvas 
+        id="input_cp_area"
+        width="512px" 
+        height="512px" 
+        style="border: 1px solid #000000;">
+        </canvas>
+    </div>
+    <script src="simulator.js"></script>
+</body>
+</html>

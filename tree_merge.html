@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>展開図統合ツール</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="tree_merge.css">
+</head>
+<body translate="no">
+    <h1>展開図統合ツール</h1>
+    
+    <div class="container">
+        <div class="left-panel">
+            <h2>展開図保存</h2>
+            <input type="text" id="cp_name" placeholder="展開図名">
+            <button id="save_cp">現在の展開図を保存</button>
+            <button id="load_to_editor">エディタで開く</button>
+            
+            <h2>ファイルインポート</h2>
+            <input type="file" id="file_import" accept=".svg,.fold">
+            <button id="import_file">ファイルをインポート</button>
+            
+            <h2>統合設定</h2>
+            <label>
+                <input type="checkbox" id="auto_optimize" checked> 自動最適化（サイズ・位置）
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="use_pattern_matching"> 黒線パターンマッチング配置
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="eliminate_intersections"> 線分交差排除（反復最適化）
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="enable_flat_fold_resize"> リサイズ時平坦折り線追加
+            </label>
+            <br>
+            <label>スケール: <input type="range" id="merge_scale" min="0.1" max="2" step="0.1" value="1"></label>
+            <span id="scale_value">1.0</span>
+            <br>
+            <label>
+                <input type="checkbox" id="auto_flat_fold"> 平坦折り最適化
+            </label>
+            <br>
+            <label>
+                <input type="checkbox" id="optimize_22_5"> 22.5度系最適化
+            </label>
+            
+            <h2>保存済み展開図</h2>
+            <div id="saved_cps_list"></div>
+            <button id="delete_selected_cp" style="background: #ff4444;">選択した展開図を削除</button>
+        </div>
+        
+        <div class="center-panel">
+            <h2>樹形図</h2>
+            <div class="tree-controls">
+                <button id="add_node">ノード追加</button>
+                <button id="remove_node">ノード削除</button>
+                <button id="merge_all">統合実行</button>
+            </div>
+            <canvas id="tree_canvas" width="600" height="500"></canvas>
+        </div>
+        
+        <div class="right-panel">
+            <h2>統合結果</h2>
+            <canvas id="merged_canvas" width="512" height="512"></canvas>
+            <select id="export_format">
+                <option value="svg">SVG</option>
+                <option value="json">JSON</option>
+            </select>
+            <button id="export_merged">統合結果をエクスポート</button>
+        </div>
+    </div>
+    
+    <script src="simulator.js"></script>
+    <script src="tree_merge.js"></script>
+</body>
+</html>
