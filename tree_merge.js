@@ -1,3 +1,19 @@
+// Seeded Random Number Generator for deterministic results
+class SeededRandom {
+    constructor(seed = 12345) {
+        this.seed = seed;
+    }
+
+    next() {
+        this.seed = (this.seed * 9301 + 49297) % 233280;
+        return this.seed / 233280;
+    }
+
+    nextInt(max) {
+        return Math.floor(this.next() * max);
+    }
+}
+
 // Crease Pattern Storage System
 class CPStorage {
     constructor() {
@@ -7,13 +23,14 @@ class CPStorage {
     saveCP(name, points, lines) {
         const cps = this.getAllCPs();
         
+        // Store CP without forcing a fixed 512x512 frame
         const cpData = {
             id: Date.now(),
             name: name,
-            points: points.map(p => ({x: p.x, y: p.y})),
+            points: points.map(p => ({x: this.roundToFixed(p.x), y: this.roundToFixed(p.y)})),
             lines: lines.map(l => ({
-                p1: {x: l.p1.x, y: l.p1.y},
-                p2: {x: l.p2.x, y: l.p2.y},
+                p1: {x: this.roundToFixed(l.p1.x), y: this.roundToFixed(l.p1.y)},
+                p2: {x: this.roundToFixed(l.p2.x), y: this.roundToFixed(l.p2.y)},
                 color: l.color
             })),
             createdAt: new Date().toISOString()
@@ -21,6 +38,10 @@ class CPStorage {
         cps.push(cpData);
         localStorage.setItem(this.storageKey, JSON.stringify(cps));
         return cpData;
+    }
+
+    roundToFixed(value, decimals = 4) {
+        return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
     }
 
     getAllCPs() {
@@ -504,11 +525,12 @@ class TreeDiagram {
     }
 }
 
-// Crease Pattern Merger
+// Crease Pattern Merger - with deterministic results
 class CPMerger {
     constructor() {
         this.cpStorage = new CPStorage();
         this.baseFrame = this.createBaseFrame();
+        this.rng = new SeededRandom(12345); // Fixed seed for deterministic results
     }
 
     createBaseFrame() {
@@ -529,13 +551,14 @@ class CPMerger {
         return { points, lines };
     }
 
-    // 決定的なハッシュベースの乱数生成器（同じシードでは常に同じ値を返す）
-    seededRandom(seed) {
-        const x = Math.sin(seed) * 10000;
-        return x - Math.floor(x);
+    roundToFixed(value, decimals = 4) {
+        return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
     }
 
     mergeCPs(cpIds, scale = 1, addIntersections = true, autoFlatFold = false, autoOptimize = false, treeDiagram = null, optimize22_5 = false, usePatternMatching = false, eliminateIntersections = false, enableFlatFoldResize = false) {
+        // Reset RNG for deterministic results
+        this.rng = new SeededRandom(12345);
+
         if (cpIds.length === 0) return null;
         
         const mergedPoints = [];
@@ -563,7 +586,7 @@ class CPMerger {
         }
         
         this.baseFrame.points.forEach(p => {
-            const key = `${p.x},${p.y}`;
+            const key = `${this.roundToFixed(p.x)},${this.roundToFixed(p.y)}`;
             if (!pointMap.has(key)) {
                 pointMap.set(key, p);
                 mergedPoints.push({...p});
@@ -599,7 +622,7 @@ class CPMerger {
             const sourceLines = [];
             
             transformedCP.points.forEach(p => {
-                const key = `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+                const key = `${this.roundToFixed(p.x)},${this.roundToFixed(p.y)}`;
                 if (!pointMap.has(key)) {
                     pointMap.set(key, p);
                     mergedPoints.push(p);
@@ -608,8 +631,8 @@ class CPMerger {
             
             transformedCP.lines.forEach(l => {
                 const newLine = {
-                    p1: l.p1,
-                    p2: l.p2,
+                    p1: {x: this.roundToFixed(l.p1.x), y: this.roundToFixed(l.p1.y)},
+                    p2: {x: this.roundToFixed(l.p2.x), y: this.roundToFixed(l.p2.y)},
                     color: l.color,
                     source: cpId
                 };
@@ -633,10 +656,30 @@ class CPMerger {
             finalLines = this.optimizeFor22_5System(mergedLines, mergedPoints);
         }
         
+        // Sort for deterministic output
+        this.sortLinesAndPoints(finalLines, mergedPoints);
+        
         return {
             points: mergedPoints,
             lines: finalLines
         };
+    }
+
+    sortLinesAndPoints(lines, points) {
+        // Sort points by coordinates for deterministic output
+        points.sort((a, b) => {
+            if (a.x !== b.x) return a.x - b.x;
+            return a.y - b.y;
+        });
+        
+        // Sort lines by start and end points for deterministic output
+        lines.sort((a, b) => {
+            if (a.p1.x !== b.p1.x) return a.p1.x - b.p1.x;
+            if (a.p1.y !== b.p1.y) return a.p1.y - b.p1.y;
+            if (a.p2.x !== b.p2.x) return a.p2.x - b.p2.x;
+            if (a.p2.y !== b.p2.y) return a.p2.y - b.p2.y;
+            return a.color.localeCompare(b.color);
+        });
     }
 
     applyRegularPositioning(cp, index, cpScale, optimalPositions, autoOptimize, scale, enableFlatFold = false) {
@@ -956,15 +999,15 @@ class CPMerger {
         return false;
     }
 
-    // 決定的な最適化：反復回数を固定し、シード値を使用して決定的な調整を行う
     optimizeToEliminateIntersections(cpIds, treeDiagram = null, enableFlatFold = false) {
-        const maxIterations = 50; // 固定の反復回数
+        const maxIterations = 100;
+        let iteration = 0;
         let bestLayout = null;
         let bestIntersectionCount = Infinity;
         
         let currentLayout = this.calculateOptimalLayout(cpIds, treeDiagram);
         
-        for (let iteration = 0; iteration < maxIterations; iteration++) {
+        while (iteration < maxIterations) {
             const merged = this.mergeCPs(cpIds, currentLayout.scale, true, false, false, treeDiagram, false, false, false, enableFlatFold);
             
             if (!merged) {
@@ -975,54 +1018,19 @@ class CPMerger {
             
             if (intersectionCount < bestIntersectionCount) {
                 bestIntersectionCount = intersectionCount;
-                bestLayout = {
-                    scale: currentLayout.scale,
-                    positions: currentLayout.positions.map(p => ({...p}))
-                };
+                bestLayout = { ...currentLayout };
                 
                 if (intersectionCount === 0) {
                     break;
                 }
             }
             
-            // 決定的な調整：シード値を使用
-            currentLayout = this.adjustPositionsDeterministic(cpIds, currentLayout, iteration);
+            currentLayout = this.adjustPositionsToReduceIntersections(cpIds, currentLayout, merged.lines);
+            
+            iteration++;
         }
         
         return bestLayout || currentLayout;
-    }
-
-    // 決定的な位置調整（ランダムではなく、イテレーション番号を使用）
-    adjustPositionsDeterministic(cpIds, currentLayout, iterationIndex) {
-        // 各CPに対して異なる調整を施す（決定的）
-        const adjustedPositions = currentLayout.positions.map((pos, cpIndex) => {
-            // シード値：CP索引 + イテレーション番号の組み合わせ
-            const seed1 = cpIndex * 1000 + iterationIndex * 17;
-            const seed2 = cpIndex * 2000 + iterationIndex * 31;
-            
-            const random1 = this.seededRandom(seed1);
-            const random2 = this.seededRandom(seed2);
-            
-            // 小さな固定値による調整（ランダムではなく決定的）
-            const adjustmentX = (random1 - 0.5) * 10; // ±5ピクセル
-            const adjustmentY = (random2 - 0.5) * 10; // ±5ピクセル
-            
-            return {
-                x: pos.x + adjustmentX,
-                y: pos.y + adjustmentY
-            };
-        });
-        
-        // スケールも決定的に調整
-        const scaleSeed = iterationIndex * 42;
-        const scaleRandom = this.seededRandom(scaleSeed);
-        const scaleAdjustment = 0.95 + scaleRandom * 0.1; // 0.95～1.05の範囲
-        const adjustedScale = currentLayout.scale * scaleAdjustment;
-        
-        return {
-            scale: Math.max(0.3, Math.min(1.5, adjustedScale)),
-            positions: adjustedPositions
-        };
     }
 
     countIntersections(lines) {
@@ -1035,6 +1043,22 @@ class CPMerger {
             }
         }
         return count;
+    }
+
+    adjustPositionsToReduceIntersections(cpIds, currentLayout, lines) {
+        // Use seeded RNG for deterministic adjustments
+        const adjustedPositions = currentLayout.positions.map(pos => ({
+            x: pos.x + (this.rng.next() - 0.5) * 20,
+            y: pos.y + (this.rng.next() - 0.5) * 20
+        }));
+        
+        const scaleAdjustment = 0.9 + this.rng.next() * 0.2;
+        const adjustedScale = currentLayout.scale * scaleAdjustment;
+        
+        return {
+            scale: adjustedScale,
+            positions: adjustedPositions
+        };
     }
 
     calculateCPBounds(cp) {
@@ -1695,7 +1719,7 @@ class CPMerger {
                         );
                         
                         if (intersection) {
-                            const key = `${intersection.x.toFixed(2)},${intersection.y.toFixed(2)}`;
+                            const key = `${this.roundToFixed(intersection.x)},${this.roundToFixed(intersection.y)}`;
                             if (!pointMap.has(key)) {
                                 pointMap.set(key, intersection);
                                 mergedPoints.push(intersection);
@@ -1735,7 +1759,13 @@ class CPMerger {
             return dist > 1 && dist < 100;
         }).slice(0, 4);
         
-        nearbyPoints.forEach(point => {
+        // Sort nearby points for deterministic ordering
+        nearbyPoints.sort((a, b) => {
+            if (a.x !== b.x) return a.x - b.x;
+            return a.y - b.y;
+        });
+        
+        nearbyPoints.forEach((point, index) => {
             const lineExists = mergedLines.some(l => {
                 const sameLine = 
                     (Math.abs(l.p1.x - intersection.x) < 0.1 && Math.abs(l.p1.y - intersection.y) < 0.1 &&
@@ -1746,17 +1776,16 @@ class CPMerger {
             });
             
             if (!lineExists) {
-                // autoFlatFoldの場合も決定的な色選択を行う
+                // Deterministic color selection: use seeded RNG index-based
                 let color = 'black';
                 if (autoFlatFold) {
-                    // ハッシュベースで決定的に色を決定
-                    const seed = Math.round(intersection.x * 1000) + Math.round(intersection.y * 1000);
-                    color = this.seededRandom(seed) > 0.5 ? 'red' : 'blue';
+                    const colorOptions = ['red', 'blue'];
+                    color = colorOptions[index % 2];
                 }
                 
                 mergedLines.push({
-                    p1: {x: intersection.x, y: intersection.y},
-                    p2: {x: point.x, y: point.y},
+                    p1: {x: this.roundToFixed(intersection.x), y: this.roundToFixed(intersection.y)},
+                    p2: {x: this.roundToFixed(point.x), y: this.roundToFixed(point.y)},
                     color: color
                 });
             }
