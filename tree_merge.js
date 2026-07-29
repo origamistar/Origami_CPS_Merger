@@ -654,7 +654,7 @@ class CPMerger {
                     color: l.color,
                     source: cpId
                 };
-                if (overlayMode && mergedLines.some(existing => existing.color === newLine.color && this.linesEqual(existing, newLine))) {
+                if (overlayMode && mergedLines.some(existing => existing.color === newLine.color && this.lineContainsSegment(existing, newLine))) {
                     return;
                 }
                 mergedLines.push(newLine);
@@ -968,6 +968,29 @@ class CPMerger {
         );
     }
 
+    // True when segment is fully covered by container (collinear and both
+    // endpoints within container's span)
+    lineContainsSegment(container, segment, tolerance = 1) {
+        const dx = container.p2.x - container.p1.x;
+        const dy = container.p2.y - container.p1.y;
+        const lengthSquared = dx * dx + dy * dy;
+        if (lengthSquared < tolerance) {
+            return this.linesEqual(container, segment);
+        }
+        
+        const onContainer = (p) => {
+            const t = ((p.x - container.p1.x) * dx + (p.y - container.p1.y) * dy) / lengthSquared;
+            if (t < -0.002 || t > 1.002) {
+                return false;
+            }
+            const projX = container.p1.x + t * dx;
+            const projY = container.p1.y + t * dy;
+            return Math.hypot(p.x - projX, p.y - projY) < tolerance;
+        };
+        
+        return onContainer(segment.p1) && onContainer(segment.p2);
+    }
+
     areLinesCollinear(line1, line2, tolerance = 0.001) {
         const dx1 = line1.p2.x - line1.p1.x;
         const dy1 = line1.p2.y - line1.p1.y;
@@ -1189,6 +1212,13 @@ class CPMerger {
         
         const matches = {};
         for (const entry of entries) {
+            const hasBlackLines = entry.cp.lines.some(l => l.color === 'black');
+            if (!hasBlackLines) {
+                // CPs without black lines (e.g. center flaps) already live on the
+                // shared square: overlay them in place
+                matches[entry.cpId] = { offset: { x: 0, y: 0 }, rotation: 0 };
+                continue;
+            }
             const match = this.findBestMatchPosition(entry.cp);
             if (!match) {
                 return null;
@@ -1200,11 +1230,22 @@ class CPMerger {
     }
 
     resolveOverlayIntersections(mergedLines, mergedPoints, pointMap, cpLinesBySource) {
+        const hubEndpoints = this.determineHubEndpoints(cpLinesBySource);
+        
+        // Collect crossing events on the original geometry and process them in
+        // the order the creases would reach them growing outward from their
+        // hubs, so a crease truncated by an earlier crossing no longer
+        // participates in later ones
+        const events = [];
+        
         for (let i = 0; i < cpLinesBySource.length; i++) {
             for (let j = i + 1; j < cpLinesBySource.length; j++) {
                 cpLinesBySource[i].forEach(line1 => {
                     cpLinesBySource[j].forEach(line2 => {
-                        if (line1.color !== line2.color || line1.color === 'black') {
+                        // only mountain (hinge) creases from different flaps
+                        // conflict at a crossing; valley (axial) creases may
+                        // cross freely, e.g. the two diagonals at the center
+                        if (line1.color !== 'red' || line2.color !== 'red') {
                             return;
                         }
                         
@@ -1217,13 +1258,60 @@ class CPMerger {
                             return;
                         }
                         
-                        this.resolveCrossingAt(mergedLines, mergedPoints, pointMap, line1, line2, intersection);
+                        const hub1 = hubEndpoints.get(line1) === 'p2' ? line1.p2 : line1.p1;
+                        const hub2 = hubEndpoints.get(line2) === 'p2' ? line2.p2 : line2.p1;
+                        const dist1 = Math.hypot(intersection.x - hub1.x, intersection.y - hub1.y);
+                        const dist2 = Math.hypot(intersection.x - hub2.x, intersection.y - hub2.y);
+                        
+                        events.push({
+                            line1, line2,
+                            point: intersection,
+                            time: Math.max(dist1, dist2)
+                        });
                     });
                 });
             }
         }
         
+        events.sort((a, b) => {
+            if (a.time !== b.time) return a.time - b.time;
+            if (a.point.x !== b.point.x) return a.point.x - b.point.x;
+            return a.point.y - b.point.y;
+        });
+        
+        events.forEach(event => {
+            if (!this.segmentsCross(event.line1, event.line2)) {
+                return;
+            }
+            
+            this.resolveCrossingAt(mergedLines, mergedPoints, pointMap, event.line1, event.line2, event.point, hubEndpoints);
+        });
+        
         this.pruneUnusedPoints(mergedLines, mergedPoints, pointMap);
+    }
+
+    determineHubEndpoints(cpLinesBySource) {
+        const hubEndpoints = new Map();
+        
+        cpLinesBySource.forEach(lines => {
+            const counts = new Map();
+            const keyOf = p => `${Math.round(p.x * 100)},${Math.round(p.y * 100)}`;
+            
+            lines.forEach(l => {
+                counts.set(keyOf(l.p1), (counts.get(keyOf(l.p1)) || 0) + 1);
+                counts.set(keyOf(l.p2), (counts.get(keyOf(l.p2)) || 0) + 1);
+            });
+            
+            lines.forEach(l => {
+                const count1 = counts.get(keyOf(l.p1));
+                const count2 = counts.get(keyOf(l.p2));
+                if (count1 !== count2) {
+                    hubEndpoints.set(l, count1 > count2 ? 'p1' : 'p2');
+                }
+            });
+        });
+        
+        return hubEndpoints;
     }
 
     // Truncate two crossing creases from different CPs at their intersection
@@ -1232,17 +1320,24 @@ class CPMerger {
     // bisector of the removed directions out to the paper boundary, plus a
     // crease of the opposite type in the direction that satisfies Kawasaki's
     // theorem
-    resolveCrossingAt(mergedLines, mergedPoints, pointMap, line1, line2, intersection) {
+    resolveCrossingAt(mergedLines, mergedPoints, pointMap, line1, line2, intersection, hubEndpoints) {
         const px = this.roundToFixed(intersection.x);
         const py = this.roundToFixed(intersection.y);
         
         const truncate = (line) => {
-            const dist1 = Math.hypot(line.p1.x - px, line.p1.y - py);
-            const dist2 = Math.hypot(line.p2.x - px, line.p2.y - py);
-            const dropped = dist1 >= dist2 ? line.p2 : line.p1;
+            const hubKey = hubEndpoints && hubEndpoints.get(line);
+            let keepP1;
+            if (hubKey) {
+                keepP1 = hubKey === 'p1';
+            } else {
+                const dist1 = Math.hypot(line.p1.x - px, line.p1.y - py);
+                const dist2 = Math.hypot(line.p2.x - px, line.p2.y - py);
+                keepP1 = dist1 >= dist2;
+            }
+            const dropped = keepP1 ? line.p2 : line.p1;
             const droppedAngle = Math.atan2(dropped.y - py, dropped.x - px) * (180 / Math.PI);
             
-            if (dist1 >= dist2) {
+            if (keepP1) {
                 line.p2 = { x: px, y: py };
             } else {
                 line.p1 = { x: px, y: py };
@@ -1286,11 +1381,94 @@ class CPMerger {
         const creaseColor = line1.color;
         const oppositeColor = creaseColor === 'red' ? 'blue' : 'red';
         
+        const incidentSegments = this.collectIncidentCreases(mergedLines, line1, line2, { x: px, y: py });
+        
+        if (incidentSegments.length > 0) {
+            // A crease from another CP already passes through the vertex
+            // (e.g. a center flap's crease along the symmetry axis of the two
+            // truncated creases). Reuse it instead of adding new rays: the
+            // segment along the bisector keeps the crease type, and the
+            // opposite segment flips to the opposite type so the vertex
+            // satisfies Maekawa's theorem.
+            incidentSegments.forEach(segment => {
+                const dir = this.normalizeAngle360(
+                    Math.atan2(segment.awayPoint.y - py, segment.awayPoint.x - px) * (180 / Math.PI)
+                );
+                if (this.angleDifference(dir, bisector) < 2) {
+                    segment.line.color = creaseColor;
+                } else if (this.angleDifference(dir, this.normalizeAngle360(bisector + 180)) < 2) {
+                    segment.line.color = oppositeColor;
+                }
+                this.splitBoundaryLinesAt(mergedLines, segment.awayPoint);
+            });
+            return;
+        }
+        
         this.addRayToBoundary(mergedLines, mergedPoints, pointMap, { x: px, y: py }, bisector, creaseColor);
         
         if (fourthAngle !== null) {
             this.addRayToBoundary(mergedLines, mergedPoints, pointMap, { x: px, y: py }, fourthAngle, oppositeColor);
         }
+    }
+
+    // Find creases (other than the two being truncated) incident to or
+    // passing through the given point; lines passing strictly through it are
+    // split there first
+    collectIncidentCreases(mergedLines, line1, line2, point) {
+        const tolerance = 0.01;
+        const segments = [];
+        
+        for (let i = mergedLines.length - 1; i >= 0; i--) {
+            const line = mergedLines[i];
+            if (line === line1 || line === line2 || line.color === 'black') {
+                continue;
+            }
+            
+            const atP1 = Math.hypot(line.p1.x - point.x, line.p1.y - point.y) < tolerance;
+            const atP2 = Math.hypot(line.p2.x - point.x, line.p2.y - point.y) < tolerance;
+            
+            if (atP1 || atP2) {
+                segments.push({ line, awayPoint: atP1 ? line.p2 : line.p1 });
+                continue;
+            }
+            
+            const dx = line.p2.x - line.p1.x;
+            const dy = line.p2.y - line.p1.y;
+            const lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared < tolerance) {
+                continue;
+            }
+            
+            const t = ((point.x - line.p1.x) * dx + (point.y - line.p1.y) * dy) / lengthSquared;
+            if (t <= 0.001 || t >= 0.999) {
+                continue;
+            }
+            
+            const projX = line.p1.x + t * dx;
+            const projY = line.p1.y + t * dy;
+            if (Math.hypot(point.x - projX, point.y - projY) > tolerance) {
+                continue;
+            }
+            
+            const oldP2 = line.p2;
+            line.p2 = { x: point.x, y: point.y };
+            const newLine = {
+                p1: { x: point.x, y: point.y },
+                p2: oldP2,
+                color: line.color,
+                source: line.source
+            };
+            mergedLines.push(newLine);
+            segments.push({ line, awayPoint: line.p1 });
+            segments.push({ line: newLine, awayPoint: newLine.p2 });
+        }
+        
+        return segments;
+    }
+
+    angleDifference(a, b) {
+        const diff = Math.abs(this.normalizeAngle360(a) - this.normalizeAngle360(b));
+        return Math.min(diff, 360 - diff);
     }
 
     normalizeAngle360(angle) {
