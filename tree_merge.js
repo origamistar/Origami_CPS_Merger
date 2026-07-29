@@ -613,7 +613,12 @@ class CPMerger {
             
             let transformedCP;
             
-            if (usePatternMatching) {
+            // Pattern matching pins CPs to the frame and would override the
+            // separated positions computed by intersection elimination,
+            // reducing its effect to a mere scale change
+            const patternMatchingApplies = usePatternMatching && !(autoOptimize && eliminateIntersections);
+            
+            if (patternMatchingApplies) {
                 const bestMatch = this.findBestMatchPosition(cp);
                 if (bestMatch) {
                     transformedCP = this.applyMatchPosition(cp, bestMatch, enableFlatFoldResize, cpScale);
