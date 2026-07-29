@@ -576,7 +576,13 @@ class CPMerger {
         let optimalPositions = [];
         let optimalScales = [];
         
-        if (autoOptimize) {
+        // Overlay mode: when every CP shares the paper frame (black lines match
+        // the base frame), merge them on the same square and resolve crossing
+        // creases theoretically instead of laying the CPs out side by side
+        const overlayMatches = usePatternMatching ? this.findOverlayMatches(cpIds) : null;
+        const overlayMode = overlayMatches !== null;
+        
+        if (autoOptimize && !overlayMode) {
             if (eliminateIntersections) {
                 const optimization = this.optimizeToEliminateIntersections(cpIds, treeDiagram, enableFlatFoldResize);
                 optimalScale = optimization.scale;
@@ -618,7 +624,9 @@ class CPMerger {
             // reducing its effect to a mere scale change
             const patternMatchingApplies = usePatternMatching && !(autoOptimize && eliminateIntersections);
             
-            if (patternMatchingApplies) {
+            if (overlayMode) {
+                transformedCP = this.applyMatchPosition(cp, overlayMatches[cpId], false, 1);
+            } else if (patternMatchingApplies) {
                 const bestMatch = this.findBestMatchPosition(cp);
                 if (bestMatch) {
                     transformedCP = this.applyMatchPosition(cp, bestMatch, enableFlatFoldResize, cpScale);
@@ -646,6 +654,9 @@ class CPMerger {
                     color: l.color,
                     source: cpId
                 };
+                if (overlayMode && mergedLines.some(existing => existing.color === newLine.color && this.linesEqual(existing, newLine))) {
+                    return;
+                }
                 mergedLines.push(newLine);
                 sourceLines.push(newLine);
             });
@@ -653,11 +664,13 @@ class CPMerger {
             cpLinesBySource.push(sourceLines);
         });
         
-        if (cpLinesBySource.length > 1) {
+        if (overlayMode) {
+            this.resolveOverlayIntersections(mergedLines, mergedPoints, pointMap, cpLinesBySource);
+        } else if (cpLinesBySource.length > 1) {
             this.addIntersectionCreases(mergedLines, mergedPoints, pointMap, cpLinesBySource, autoFlatFold);
         }
         
-        if (treeDiagram && autoOptimize) {
+        if (treeDiagram && autoOptimize && !overlayMode) {
             this.generateRibbonConnections(mergedLines, mergedPoints, treeDiagram, cpIds);
         }
         
@@ -1163,6 +1176,243 @@ class CPMerger {
         
         const eps = 0.001;
         return ua > eps && ua < 1 - eps && ub > eps && ub < 1 - eps;
+    }
+
+    findOverlayMatches(cpIds) {
+        const entries = cpIds
+            .map(cpId => ({ cpId, cp: this.cpStorage.getCP(cpId) }))
+            .filter(entry => entry.cp);
+        
+        if (entries.length < 2) {
+            return null;
+        }
+        
+        const matches = {};
+        for (const entry of entries) {
+            const match = this.findBestMatchPosition(entry.cp);
+            if (!match) {
+                return null;
+            }
+            matches[entry.cpId] = match;
+        }
+        
+        return matches;
+    }
+
+    resolveOverlayIntersections(mergedLines, mergedPoints, pointMap, cpLinesBySource) {
+        for (let i = 0; i < cpLinesBySource.length; i++) {
+            for (let j = i + 1; j < cpLinesBySource.length; j++) {
+                cpLinesBySource[i].forEach(line1 => {
+                    cpLinesBySource[j].forEach(line2 => {
+                        if (line1.color !== line2.color || line1.color === 'black') {
+                            return;
+                        }
+                        
+                        if (!this.segmentsCross(line1, line2)) {
+                            return;
+                        }
+                        
+                        const intersection = this.getLineIntersection(line1.p1, line1.p2, line2.p1, line2.p2);
+                        if (!intersection) {
+                            return;
+                        }
+                        
+                        this.resolveCrossingAt(mergedLines, mergedPoints, pointMap, line1, line2, intersection);
+                    });
+                });
+            }
+        }
+        
+        this.pruneUnusedPoints(mergedLines, mergedPoints, pointMap);
+    }
+
+    // Truncate two crossing creases from different CPs at their intersection
+    // (keeping each crease's longer, hub-side segment) and restore flat
+    // foldability at the new vertex: a crease of the same type along the
+    // bisector of the removed directions out to the paper boundary, plus a
+    // crease of the opposite type in the direction that satisfies Kawasaki's
+    // theorem
+    resolveCrossingAt(mergedLines, mergedPoints, pointMap, line1, line2, intersection) {
+        const px = this.roundToFixed(intersection.x);
+        const py = this.roundToFixed(intersection.y);
+        
+        const truncate = (line) => {
+            const dist1 = Math.hypot(line.p1.x - px, line.p1.y - py);
+            const dist2 = Math.hypot(line.p2.x - px, line.p2.y - py);
+            const dropped = dist1 >= dist2 ? line.p2 : line.p1;
+            const droppedAngle = Math.atan2(dropped.y - py, dropped.x - px) * (180 / Math.PI);
+            
+            if (dist1 >= dist2) {
+                line.p2 = { x: px, y: py };
+            } else {
+                line.p1 = { x: px, y: py };
+            }
+            
+            return droppedAngle;
+        };
+        
+        const droppedAngle1 = truncate(line1);
+        const droppedAngle2 = truncate(line2);
+        
+        this.registerPoint(mergedPoints, pointMap, px, py);
+        
+        const rad1 = droppedAngle1 * (Math.PI / 180);
+        const rad2 = droppedAngle2 * (Math.PI / 180);
+        const sumX = Math.cos(rad1) + Math.cos(rad2);
+        const sumY = Math.sin(rad1) + Math.sin(rad2);
+        
+        if (Math.hypot(sumX, sumY) < 0.001) {
+            return;
+        }
+        
+        const bisectorAngle = Math.atan2(sumY, sumX) * (180 / Math.PI);
+        const keptAngle1 = this.normalizeAngle360(droppedAngle1 + 180);
+        const keptAngle2 = this.normalizeAngle360(droppedAngle2 + 180);
+        const bisector = this.normalizeAngle360(bisectorAngle);
+        
+        const candidates = [
+            this.normalizeAngle360(bisector + keptAngle1 - keptAngle2 - 180),
+            this.normalizeAngle360(bisector + keptAngle2 - keptAngle1 - 180)
+        ];
+        
+        let fourthAngle = null;
+        for (const candidate of candidates) {
+            if (this.satisfiesKawasaki([keptAngle1, keptAngle2, bisector, candidate])) {
+                fourthAngle = candidate;
+                break;
+            }
+        }
+        
+        const creaseColor = line1.color;
+        const oppositeColor = creaseColor === 'red' ? 'blue' : 'red';
+        
+        this.addRayToBoundary(mergedLines, mergedPoints, pointMap, { x: px, y: py }, bisector, creaseColor);
+        
+        if (fourthAngle !== null) {
+            this.addRayToBoundary(mergedLines, mergedPoints, pointMap, { x: px, y: py }, fourthAngle, oppositeColor);
+        }
+    }
+
+    normalizeAngle360(angle) {
+        return ((angle % 360) + 360) % 360;
+    }
+
+    satisfiesKawasaki(angles) {
+        const sorted = angles.map(a => this.normalizeAngle360(a)).sort((a, b) => a - b);
+        
+        const gaps = [];
+        for (let i = 0; i < sorted.length; i++) {
+            const next = i === sorted.length - 1 ? sorted[0] + 360 : sorted[i + 1];
+            gaps.push(next - sorted[i]);
+        }
+        
+        let alternatingSum = 0;
+        for (let i = 0; i < gaps.length; i += 2) {
+            alternatingSum += gaps[i];
+        }
+        
+        return Math.abs(alternatingSum - 180) < 0.5;
+    }
+
+    addRayToBoundary(mergedLines, mergedPoints, pointMap, origin, angleDeg, color) {
+        const rad = angleDeg * (Math.PI / 180);
+        const dx = Math.cos(rad);
+        const dy = Math.sin(rad);
+        
+        let bestT = Infinity;
+        
+        const tryEdge = (t, coord) => {
+            if (t > 0.001 && t < bestT && coord >= -0.01 && coord <= 512.01) {
+                bestT = t;
+            }
+        };
+        
+        if (Math.abs(dx) > 0.0001) {
+            tryEdge((0 - origin.x) / dx, origin.y + ((0 - origin.x) / dx) * dy);
+            tryEdge((512 - origin.x) / dx, origin.y + ((512 - origin.x) / dx) * dy);
+        }
+        if (Math.abs(dy) > 0.0001) {
+            tryEdge((0 - origin.y) / dy, origin.x + ((0 - origin.y) / dy) * dx);
+            tryEdge((512 - origin.y) / dy, origin.x + ((512 - origin.y) / dy) * dx);
+        }
+        
+        if (!isFinite(bestT)) {
+            return;
+        }
+        
+        const qx = this.roundToFixed(Math.min(512, Math.max(0, origin.x + bestT * dx)));
+        const qy = this.roundToFixed(Math.min(512, Math.max(0, origin.y + bestT * dy)));
+        
+        const newLine = {
+            p1: { x: this.roundToFixed(origin.x), y: this.roundToFixed(origin.y) },
+            p2: { x: qx, y: qy },
+            color: color
+        };
+        
+        if (!mergedLines.some(l => l.color === color && this.linesEqual(l, newLine))) {
+            mergedLines.push(newLine);
+        }
+        
+        this.registerPoint(mergedPoints, pointMap, qx, qy);
+        this.splitBoundaryLinesAt(mergedLines, { x: qx, y: qy });
+    }
+
+    registerPoint(mergedPoints, pointMap, x, y) {
+        const key = `${this.roundToFixed(x)},${this.roundToFixed(y)}`;
+        if (!pointMap.has(key)) {
+            const point = { x, y };
+            pointMap.set(key, point);
+            mergedPoints.push(point);
+        }
+    }
+
+    splitBoundaryLinesAt(mergedLines, point) {
+        const tolerance = 0.01;
+        
+        for (let i = mergedLines.length - 1; i >= 0; i--) {
+            const line = mergedLines[i];
+            if (line.color !== 'black') {
+                continue;
+            }
+            
+            const dx = line.p2.x - line.p1.x;
+            const dy = line.p2.y - line.p1.y;
+            const lengthSquared = dx * dx + dy * dy;
+            if (lengthSquared < tolerance) {
+                continue;
+            }
+            
+            const t = ((point.x - line.p1.x) * dx + (point.y - line.p1.y) * dy) / lengthSquared;
+            if (t <= 0.001 || t >= 0.999) {
+                continue;
+            }
+            
+            const projX = line.p1.x + t * dx;
+            const projY = line.p1.y + t * dy;
+            if (Math.hypot(point.x - projX, point.y - projY) > tolerance) {
+                continue;
+            }
+            
+            const oldP2 = line.p2;
+            line.p2 = { x: point.x, y: point.y };
+            mergedLines.push({
+                p1: { x: point.x, y: point.y },
+                p2: oldP2,
+                color: line.color,
+                source: line.source
+            });
+        }
+    }
+
+    pruneUnusedPoints(mergedLines, mergedPoints, pointMap) {
+        const tolerance = 0.01;
+        const used = mergedPoints.filter(p =>
+            mergedLines.some(l =>
+                (Math.abs(l.p1.x - p.x) < tolerance && Math.abs(l.p1.y - p.y) < tolerance) ||
+                (Math.abs(l.p2.x - p.x) < tolerance && Math.abs(l.p2.y - p.y) < tolerance)
+            )
+        );
+        mergedPoints.splice(0, mergedPoints.length, ...used);
     }
 
     countIntersections(lines) {
